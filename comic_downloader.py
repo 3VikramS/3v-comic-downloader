@@ -17,6 +17,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import io
 import re
 import sys
 import time
@@ -26,6 +27,7 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
+from PIL import Image, UnidentifiedImageError
 
 Logger = Callable[[str], None]
 
@@ -91,6 +93,18 @@ def guess_extension(url: str, content_type: str | None) -> str:
     return ".jpg"
 
 
+def validate_image(content: bytes) -> str | None:
+    """Return None if content is a decodable image, else a short reason it isn't."""
+    try:
+        with Image.open(io.BytesIO(content)) as im:
+            im.verify()
+        return None
+    except UnidentifiedImageError:
+        return "response body is not a recognizable image (HTML error page? empty body?)"
+    except Exception as exc:  # noqa: BLE001 - surface any decode failure, not just PIL's own
+        return f"image failed to decode ({exc})"
+
+
 def download_images(
     urls: list[str],
     out_dir: Path,
@@ -105,6 +119,14 @@ def download_images(
     for i, url in enumerate(urls, 1):
         resp = session.get(url, headers={"Referer": referer}, timeout=20)
         resp.raise_for_status()
+
+        problem = validate_image(resp.content)
+        if problem:
+            log(f"  [{i}/{len(urls)}] SKIPPED {url} - {problem}")
+            if delay:
+                time.sleep(delay)
+            continue
+
         ext = guess_extension(url, resp.headers.get("Content-Type"))
         dest = out_dir / f"{i:0{width}d}{ext}"
         dest.write_bytes(resp.content)
@@ -112,6 +134,9 @@ def download_images(
         log(f"  [{i}/{len(urls)}] saved {dest.name}")
         if delay:
             time.sleep(delay)
+
+    if not saved:
+        raise ValueError("None of the found URLs were decodable images - nothing to save.")
     return saved
 
 
